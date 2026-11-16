@@ -3,23 +3,32 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="A fast, lightweight frontend for make.fun bounties: the live board, bounty pages, leaderboards and hunter profiles.">
-<title>make.fun bounties</title>
+<meta name="description" content="Browse make.fun's live coding bounties: the open board, bounty details, leaderboards and hunter profiles. Fast, read-only, no sign-in.">
+<meta name="color-scheme" content="light dark">
+<title>make.fun bounties — open board</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
+<script>try{var saved=localStorage.getItem('mf-theme');if(saved==='dark'||saved==='light'){document.documentElement.setAttribute('data-theme',saved);}}catch(err){}</script>
 <script type="module" src="main.js"></script>
 </head>
 <body>
-<header class="top">
-  <a class="brand" href="#/" aria-label="make.fun bounties home">make<span>.fun</span></a>
-  <nav aria-label="Main">
-    <a href="#/">Bounties</a>
-    <a href="https://make.fun" rel="noopener">make.fun ↗</a>
-  </nav>
+<a class="skip-link" href="#app">Skip to content</a>
+<header class="site-header">
+  <div class="header-inner">
+    <a class="logo" href="#/" aria-label="make.fun bounties, home">make<span>.fun</span> <em>bounties</em></a>
+    <nav class="site-nav" aria-label="Primary">
+      <a href="#/">Board</a>
+      <a href="https://make.fun" rel="noopener">make.fun ↗</a>
+      <button type="button" id="theme-toggle" aria-label="Switch colour theme" title="Switch colour theme">◐</button>
+    </nav>
+  </div>
 </header>
 <main id="app" aria-live="polite"></main>
-<footer class="foot">
-  <p>Unofficial frontend. Data is live from <a href="https://make.fun/api" rel="noopener">make.fun's public API</a> — no sign-in, read-only. <a href="#/">Back to the board</a></p>
+<footer class="site-footer">
+  <div class="footer-inner">
+    <p>An unofficial reader for <a href="https://make.fun" rel="noopener">make.fun</a>. Every number here is live from make.fun's public API; nothing signs in or writes. Press <kbd>/</kbd> on the board to jump to search.</p>
+    <p><a href="#/">Back to the board ↑</a></p>
+  </div>
 </footer>
 </body>
 </html>

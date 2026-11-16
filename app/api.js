@@ -1,76 +1,105 @@
-// make.fun's public API: read-only GET requests, open to any origin (CORS).
-// The full API is described at https://make.fun/api/openapi.json.
+// A small client for make.fun's public API (read-only GET, open to any origin;
+// the full surface is described at https://make.fun/api/openapi.json).
 //
-// Every answer is cached twice: in memory for the session, and in sessionStorage
-// so going back to a view is instant. A cached answer older than TTL_MS is
-// revalidated with If-None-Match (the API's ETags are bound to the minute, so a
-// 304 means the data is still good). Identical requests in flight share one
-// fetch, so a view never asks for the same thing twice.
+// Answers are cached in two layers: a memory map for the session, and
+// sessionStorage so a view revisited later still renders instantly. Entries
+// older than the TTL are revalidated with If-None-Match — the API's ETags are
+// bound to the minute, so a 304 answer means the stored data is still fresh.
+// Identical requests in flight share one fetch, and `prefetch` warms the cache
+// for pages the reader is about to open (hovering a bounty card).
 
-const API = 'https://make.fun/api';
-const TTL_MS = 60000;
+const BASE = 'https://make.fun/api';
+const FRESH_MS = 60000;
 
-const mem = new Map(); // path -> { at, etag, data }
-const inflight = new Map(); // path -> Promise
-
-function readStore(path) {
-  try {
-    const raw = sessionStorage.getItem(`mf:${path}`);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
+class ApiClient {
+  constructor() {
+    this.memory = new Map(); // path -> { at, etag, data }
+    this.pending = new Map(); // path -> Promise
   }
-}
 
-function writeStore(path, entry) {
-  try {
-    sessionStorage.setItem(`mf:${path}`, JSON.stringify(entry));
-  } catch {
-    // Storage full or unavailable: the memory cache still works.
+  loadStored(path) {
+    try {
+      const raw = sessionStorage.getItem(`makefun:${path}`);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
   }
-}
 
-/** GET one API path, cached and de-duplicated. Throws on a non-2xx answer. */
-export async function get(path) {
-  const now = Date.now();
-  const hit = mem.get(path);
-  if (hit && now - hit.at < TTL_MS) return hit.data;
-  const pending = inflight.get(path);
-  if (pending) return pending;
-  const run = (async () => {
-    const cached = hit || readStore(path);
+  saveStored(path, entry) {
+    try {
+      sessionStorage.setItem(`makefun:${path}`, JSON.stringify(entry));
+    } catch {
+      // Quota full or storage blocked: the memory cache still serves.
+    }
+  }
+
+  remember(path, entry) {
+    this.memory.set(path, entry);
+    this.saveStored(path, entry);
+  }
+
+  /** GET one path, cached and de-duplicated. Rejects on a non-2xx answer. */
+  async request(path) {
+    const now = Date.now();
+    const fresh = this.memory.get(path);
+    if (fresh && now - fresh.at < FRESH_MS) return fresh.data;
+    const shared = this.pending.get(path);
+    if (shared) return shared;
+    const job = this.fetchFresh(path, fresh || this.loadStored(path), now);
+    this.pending.set(path, job);
+    try {
+      return await job;
+    } finally {
+      this.pending.delete(path);
+    }
+  }
+
+  async fetchFresh(path, cached, now) {
     const headers = {};
-    if (cached && cached.etag) headers['If-None-Match'] = cached.etag;
-    const res = await fetch(API + path, { headers });
-    if (res.status === 304 && cached) {
+    if (cached?.etag) headers['If-None-Match'] = cached.etag;
+    const response = await fetch(BASE + path, { headers });
+    if (response.status === 304 && cached) {
       const entry = { at: now, etag: cached.etag, data: cached.data };
-      mem.set(path, entry);
-      writeStore(path, entry);
+      this.remember(path, entry);
       return cached.data;
     }
-    if (!res.ok) throw new Error(`make.fun API answered ${res.status} for ${path}`);
-    const data = await res.json();
-    const entry = { at: now, etag: res.headers.get('etag'), data };
-    mem.set(path, entry);
-    writeStore(path, entry);
+    if (!response.ok) {
+      throw new Error(`make.fun API answered ${response.status} for ${path}`);
+    }
+    const data = await response.json();
+    this.remember(path, { at: now, etag: response.headers.get('etag'), data });
     return data;
-  })();
-  inflight.set(path, run);
-  try {
-    return await run;
-  } finally {
-    inflight.delete(path);
+  }
+
+  /** Warm the cache for a path without waiting for it. Failures are silent:
+   *  the real navigation will fetch it again. */
+  prefetch(path) {
+    const fresh = this.memory.get(path);
+    if ((fresh && Date.now() - fresh.at < FRESH_MS) || this.pending.has(path)) return;
+    this.request(path).catch(() => {});
+  }
+
+  /** The bounties still listed as open. `activity=times` drops the per-entry
+   *  activity a board never shows, keeping the answer small. */
+  bounties() {
+    return this.request('/competitions?status=open&activity=times');
+  }
+
+  /** One bounty in full, by slug. */
+  bounty(slug) {
+    return this.request(`/competitions/${encodeURIComponent(slug)}`);
+  }
+
+  /** One bounty's leaderboard, by slug. */
+  leaderboard(slug) {
+    return this.request(`/competitions/${encodeURIComponent(slug)}/leaderboard`);
+  }
+
+  /** One account's public profile, by handle. */
+  profile(handle) {
+    return this.request(`/profiles/${encodeURIComponent(handle)}`);
   }
 }
 
-/** The open bounties: { items: [...] } (activity=times leaves out the activity a board does not show). */
-export const getBounties = () => get('/competitions?status=open&activity=times');
-
-/** One bounty, by its slug. */
-export const getBounty = (slug) => get(`/competitions/${encodeURIComponent(slug)}`);
-
-/** One bounty's leaderboard, by its slug. */
-export const getLeaderboard = (slug) => get(`/competitions/${encodeURIComponent(slug)}/leaderboard`);
-
-/** One account's public profile, by its handle. */
-export const getProfile = (handle) => get(`/profiles/${encodeURIComponent(handle)}`);
+export const api = new ApiClient();

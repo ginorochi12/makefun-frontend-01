@@ -1,75 +1,108 @@
-// A tiny safe Markdown subset for bounty descriptions and rules:
-// headings, fenced code, lists, quotes, paragraphs, and inline code, bold,
-// italic and links. Everything is HTML-escaped first, so no markup in the
-// source can run; links are http(s) only and open in a new tab.
+// A small, safe Markdown renderer for bounty descriptions and rules. It
+// handles headings, fenced code, lists (bulleted and numbered), quotes and
+// paragraphs, with inline code, bold, italic and links inside them. The source
+// is escaped before any markup is added, links must be http(s), and nothing
+// in the source can inject an element or an attribute.
+//
+// The parser works in two passes: split the source into blocks (blank lines
+// and fence lines are the boundaries), then render each block by its shape.
 
-import { esc } from './format.js';
+import { escapeHtml } from './format.js';
 
-const LINK = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+const LINK_PATTERN = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g;
+const CODE_PATTERN = /`([^`\n]+)`/g;
+const BOLD_PATTERN = /\*\*([^*]+)\*\*/g;
+const ITALIC_PATTERN = /(^|[^*A-Za-z0-9])\*([^*\n]+)\*/g;
 
-function inline(text) {
-  return esc(text)
-    .replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`)
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-    .replace(LINK, (_, label, href) => `<a href="${href}" target="_blank" rel="noopener">${label}</a>`);
+/** Inline spans inside one line of text: code, bold, italic, links. */
+function renderInline(text) {
+  return escapeHtml(text)
+    .replace(CODE_PATTERN, (_match, code) => `<code>${code}</code>`)
+    .replace(BOLD_PATTERN, '<strong>$1</strong>')
+    .replace(ITALIC_PATTERN, '$1<em>$2</em>')
+    .replace(LINK_PATTERN, (_match, label, href) => `<a href="${href}" target="_blank" rel="noopener">${label}</a>`);
 }
 
-/** Render Markdown text to HTML. */
-export function md(source) {
+/** Split source into blocks: a fence, a heading, a quote run, a list run, or
+ *  a run of plain lines. Returns { kind, lines } per block. */
+function splitBlocks(source) {
   const lines = String(source ?? '').split('\n');
-  const out = [];
+  const blocks = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    if (line.startsWith('```')) {
-      const code = [];
-      i += 1;
-      while (i < lines.length && !lines[i].startsWith('```')) {
-        code.push(lines[i]);
-        i += 1;
-      }
-      out.push(`<pre><code>${esc(code.join('\n'))}</code></pre>`);
-      i += 1;
-      continue;
-    }
-    const heading = line.match(/^(#{1,4})\s+(.*)$/);
-    if (heading) {
-      const level = heading[1].length + 1; // h2..h5: the page already has its h1
-      out.push(`<h${level}>${inline(heading[2])}</h${level}>`);
-      i += 1;
-      continue;
-    }
-    if (/^>\s?/.test(line)) {
-      const quote = [];
-      while (i < lines.length && /^>\s?/.test(lines[i])) {
-        quote.push(lines[i].replace(/^>\s?/, ''));
-        i += 1;
-      }
-      out.push(`<blockquote>${inline(quote.join(' '))}</blockquote>`);
-      continue;
-    }
-    if (/^[-*]\s+/.test(line) || /^\d+[.)]\s+/.test(line)) {
-      const items = [];
-      const ordered = /^\d/.test(line);
-      while (i < lines.length && (/^[-*]\s+/.test(lines[i]) || /^\d+[.)]\s+/.test(lines[i]))) {
-        items.push(lines[i].replace(/^([-*]|\d+[.)])\s+/, ''));
-        i += 1;
-      }
-      const tag = ordered ? 'ol' : 'ul';
-      out.push(`<${tag}>${items.map((item) => `<li>${inline(item)}</li>`).join('')}</${tag}>`);
-      continue;
-    }
     if (line.trim() === '') {
       i += 1;
       continue;
     }
-    const para = [];
-    while (i < lines.length && lines[i].trim() !== '' && !lines[i].startsWith('```') && !/^(#{1,4}\s|[-*]\s|\d+[.)]\s|>)/.test(lines[i])) {
-      para.push(lines[i]);
+    if (line.startsWith('```')) {
+      const body = [];
+      i += 1;
+      while (i < lines.length && !lines[i].startsWith('```')) {
+        body.push(lines[i]);
+        i += 1;
+      }
+      i += 1; // skip the closing fence
+      blocks.push({ kind: 'code', lines: body });
+      continue;
+    }
+    const heading = line.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({ kind: 'heading', level: heading[1].length, lines: [heading[2]] });
+      i += 1;
+      continue;
+    }
+    if (line.startsWith('>')) {
+      const body = [];
+      while (i < lines.length && lines[i].startsWith('>')) {
+        body.push(lines[i].replace(/^>\s?/, ''));
+        i += 1;
+      }
+      blocks.push({ kind: 'quote', lines: body });
+      continue;
+    }
+    const listItem = line.match(/^([-*]|\d+[.)])\s+(.+)$/);
+    if (listItem) {
+      const ordered = /^\d/.test(line);
+      const body = [];
+      while (i < lines.length) {
+        const item = lines[i].match(/^([-*]|\d+[.)])\s+(.+)$/);
+        if (!item) break;
+        body.push(item[2]);
+        i += 1;
+      }
+      blocks.push({ kind: ordered ? 'ordered' : 'list', lines: body });
+      continue;
+    }
+    const body = [];
+    while (i < lines.length) {
+      const current = lines[i];
+      if (current.trim() === '' || current.startsWith('```') || current.startsWith('>')) break;
+      if (/^(#{1,4}\s|[-*]\s|\d+[.)]\s)/.test(current)) break;
+      body.push(current);
       i += 1;
     }
-    out.push(`<p>${inline(para.join(' '))}</p>`);
+    blocks.push({ kind: 'paragraph', lines: body });
   }
-  return out.join('\n');
+  return blocks;
+}
+
+/** Render one block to HTML. */
+function renderBlock(block) {
+  if (block.kind === 'code') return `<pre><code>${escapeHtml(block.lines.join('\n'))}</code></pre>`;
+  if (block.kind === 'heading') {
+    // Headings shift one level down: the page already owns the h1.
+    const level = Math.min(block.level + 1, 6);
+    return `<h${level}>${renderInline(block.lines[0])}</h${level}>`;
+  }
+  if (block.kind === 'quote') return `<blockquote><p>${renderInline(block.lines.join(' '))}</p></blockquote>`;
+  if (block.kind === 'list') return `<ul>${block.lines.map((item) => `<li>${renderInline(item)}</li>`).join('')}</ul>`;
+  if (block.kind === 'ordered') return `<ol>${block.lines.map((item) => `<li>${renderInline(item)}</li>`).join('')}</ol>`;
+  return `<p>${renderInline(block.lines.join(' '))}</p>`;
+}
+
+/** Render Markdown source to HTML. Empty source renders nothing. */
+export function renderMarkdown(source) {
+  if (!String(source ?? '').trim()) return '';
+  return splitBlocks(source).map(renderBlock).join('\n');
 }
